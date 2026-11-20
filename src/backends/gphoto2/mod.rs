@@ -189,6 +189,14 @@ impl GPhoto2Backend {
 /// Whether a failed focus drive means "this body cannot do it" rather than "not
 /// right now". libgphoto2 reports the Nikon refusal as a bare `GP_ERROR`
 /// (`Other`), and a body that never advertised the operation as `NotSupported`.
+/// Panasonic bodies sometimes put a few stray bytes, even a false SOI, ahead of the preview JPEG.
+/// Browsers permanently break the MJPEG image on such a frame, so cut to the real `FF D8 FF`.
+fn trim_to_jpeg(mut data: Vec<u8>) -> Option<Vec<u8>> {
+    let start = data.windows(3).position(|w| w == [0xFF, 0xD8, 0xFF])?;
+    data.drain(..start);
+    Some(data)
+}
+
 fn is_focus_refusal(err: &gphoto2::Error) -> bool {
     matches!(err.kind(), gphoto2::error::ErrorKind::Other | gphoto2::error::ErrorKind::NotSupported)
 }
@@ -440,7 +448,8 @@ impl CameraBackend for GPhoto2Backend {
         // no DirItemRequestTransfer event. Designed to be called continuously.
         let preview = camera.capture_preview().wait().map_err(map_err)?;
         let data = preview.get_data(&self.context).wait().map_err(map_err)?;
-        Ok(data.into_vec())
+        // No JPEG in the buffer reads as "not ready", so the stream keeps the last frame.
+        trim_to_jpeg(data.into_vec()).ok_or(CameraError::SdkError(0x0000_A102))
     }
 
     fn capture_photo(&self, native_id: &str) -> Result<Vec<u8>, CameraError> {
